@@ -1,0 +1,62 @@
+name: Nhac viec
+
+# Gõ cửa /api/remind mỗi 30 phút trong giờ làm.
+# Cron của GitHub chạy theo UTC — giờ VN = UTC+7.
+#   0-14 UTC  =  07:00 → 21:59 giờ VN
+# Trong khoảng đó đã bao gồm 07:30 (sinh checklist), 08:00 (báo cáo sếp), 20:00 (chốt ngày).
+#
+# Cần một secret duy nhất trong repo:
+#   Settings → Secrets and variables → Actions → New repository secret
+#   Name:   TASK_REMIND_URL
+#   Secret: https://<domain>/api/remind?key=<TASKBOT_SECRET>
+
+on:
+  schedule:
+    - cron: "*/30 0-14 * * *"
+  workflow_dispatch:
+    inputs:
+      dry:
+        description: "1 = chỉ liệt kê, không gửi tin"
+        required: false
+        default: "0"
+
+# Chạy trùng thì bỏ lượt cũ — cron nhả job muộn không dồn đống
+concurrency:
+  group: nhac-viec
+  cancel-in-progress: false
+
+jobs:
+  nhac:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Gõ cửa bộ nhắc
+        env:
+          URL: ${{ secrets.TASK_REMIND_URL }}
+          DRY: ${{ github.event.inputs.dry }}
+        run: |
+          if [ -z "$URL" ]; then
+            echo "::error::Chưa đặt secret TASK_REMIND_URL"
+            exit 1
+          fi
+          TARGET="$URL"
+          if [ "$DRY" = "1" ]; then
+            case "$URL" in
+              *\?*) TARGET="$URL&dry=1" ;;
+              *)    TARGET="$URL?dry=1" ;;
+            esac
+          fi
+
+          # Vercel cold start có thể chậm — thử lại 3 lần
+          for i in 1 2 3; do
+            CODE=$(curl -sS -o body.txt -w '%{http_code}' --max-time 60 "$TARGET" || echo 000)
+            echo "Lần $i — HTTP $CODE"
+            cat body.txt; echo
+            if [ "$CODE" = "200" ]; then
+              exit 0
+            fi
+            sleep $((i * 5))
+          done
+
+          echo "::error::Gọi /api/remind hỏng sau 3 lần (HTTP $CODE)"
+          exit 1
